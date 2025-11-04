@@ -1,5 +1,5 @@
 name: EnerSync – SalzburgAG Smart Meter CSV Importer
-version: "1.3.2"
+version: "1.3.3"
 slug: enersync_salzburgag_smart_meter_csv_importer
 description: "Import SalzburgAG smart‑meter CSV into Home Assistant energy statistics via REST API, with calibration & watermark."
 startup: services

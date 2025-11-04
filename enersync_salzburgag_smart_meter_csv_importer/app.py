@@ -185,13 +185,33 @@ def apply_anchor(df: pd.DataFrame, opts: dict) -> pd.DataFrame:
     log(f"  calibration: anchor={anchor_kwh:.3f} kWh at {dt_local.strftime('%d.%m.%Y %H:%M %Z')}, offset={offset:.6f}")
     return df
 
-def build_stats(df: pd.DataFrame) -> list:
-    # Minimal rows: start + sum (UTC with Z suffix). Sum must be non-decreasing.
-    return [
-        {"start": row["ts_utc"].strftime("%Y-%m-%dT%H:%M:%SZ"),
-         "sum": round(float(row["sum_kwh"]), 6)}
-        for _, row in df.iterrows()
+# -------- 15-minute → hourly collapse for HA --------
+def to_hourly_stats(df: pd.DataFrame) -> list:
+    """
+    Home Assistant requires statistics 'start' timestamps to be top-of-hour.
+    We take the last cumulative value ('sum_kwh') within each hour.
+    """
+    work = df.copy()
+    work["hour_start"] = work["ts_utc"].dt.floor("H")
+    # last cumulative value in each hour
+    hourly = (
+        work.sort_values("ts_utc")
+            .groupby("hour_start", as_index=False)["sum_kwh"].last()
+            .sort_values("hour_start")
+    )
+    # enforce monotonic non-decreasing
+    hourly["sum_kwh"] = hourly["sum_kwh"].cummax()
+
+    stats = [
+        {
+            "start": ts.strftime("%Y-%m-%dT%H:%M:%SZ"),  # UTC top-of-hour
+            "sum": round(float(val), 6)
+        }
+        for ts, val in zip(hourly["hour_start"], hourly["sum_kwh"])
     ]
+    log(f"  hourly points to import: {len(stats)} "
+        f"({stats[0]['start']} … {stats[-1]['start']})" if stats else "  hourly points: 0")
+    return stats
 
 def load_state():
     if STATE_PATH.exists():
@@ -217,7 +237,7 @@ def process_csv(csv_path: Path, opts: dict):
     d = parse_csv_to_df(csv_path, opts)
     d = apply_anchor(d, opts)
 
-    # watermark
+    # watermark on raw 15-min series (then collapse)
     state = load_state()
     if opts.get("reset_watermark"):
         state.pop("last_ts_utc", None); save_state(state); log("  watermark: reset requested")
@@ -232,16 +252,21 @@ def process_csv(csv_path: Path, opts: dict):
     if d.empty:
         log("  no new data — skipping"); return "skipped"
 
-    stats = build_stats(d)
+    # Collapse to hourly stats (HA requirement)
+    hourly_stats = to_hourly_stats(d)
+    if not hourly_stats:
+        log("  no hourly points after collapse — skipping"); return "skipped"
 
-    # ---------- Probe for an accepted 'source' value ----------
+    # Minimal, broadly accepted metadata
     candidate_sources = ["recorder", "integration", "api", "external", "custom"]
     last_err = None
     accepted_metadata = None
 
+    # ---------- Probe for an accepted 'source' value ----------
     for src in candidate_sources:
         meta_try = build_metadata(opts, src)
-        log(f"  DEBUG WS test payload (source='{src}'): {json.dumps({'metadata': meta_try, 'stats': stats[:1]}, ensure_ascii=False)}")
+        test_payload = {"metadata": meta_try, "stats": hourly_stats[:1]}
+        log(f"  DEBUG WS test payload (source='{src}'): {json.dumps(test_payload, ensure_ascii=False)}")
         try:
             ws = ws_connect()
             try:
@@ -249,7 +274,7 @@ def process_csv(csv_path: Path, opts: dict):
                     "id": 1,
                     "type": "recorder/import_statistics",
                     "metadata": meta_try,   # dict for WS
-                    "stats": stats[:1]
+                    "stats": hourly_stats[:1]
                 })
                 log(f"✅ WS accepted 1-row test with source='{src}'")
                 accepted_metadata = meta_try
@@ -273,7 +298,7 @@ def process_csv(csv_path: Path, opts: dict):
         meta_try = build_metadata(opts, src)
         try:
             ha_call_service("/api/services/recorder/import_statistics",
-                            {"metadata": [meta_try], "stats": stats[:1]})
+                            {"metadata": [meta_try], "stats": hourly_stats[:1]})
             log(f"✅ REST accepted 1-row test with source='{src}'")
             accepted_metadata = meta_try
         except Exception as e2:
@@ -281,18 +306,18 @@ def process_csv(csv_path: Path, opts: dict):
 
     # ---------- Bulk import ----------
     try:
-        ws_import_statistics(accepted_metadata, stats, int(opts.get("batch_size", 1000)))
+        ws_import_statistics(accepted_metadata, hourly_stats, int(opts.get("batch_size", 1000)))
     except Exception as e:
         log(f"⚠ WS bulk failed: {e}")
         log("  Falling back to REST bulk...")
-        total = len(stats); bs = int(opts.get("batch_size", 1000))
+        total = len(hourly_stats); bs = int(opts.get("batch_size", 1000))
         for i in range(0, total, bs):
-            part = stats[i:i+bs]
+            part = hourly_stats[i:i+bs]
             ha_call_service("/api/services/recorder/import_statistics",
                             {"metadata": [accepted_metadata], "stats": part})
             log(f"→ REST imported {i+len(part)}/{total}")
 
-    # watermark update
+    # watermark update on raw series (last raw timestamp we processed)
     new_last = d["ts_utc"].max().isoformat()
     state["last_ts_utc"] = new_last; save_state(state)
     log(f"✅ updated watermark to {new_last}")
@@ -321,7 +346,7 @@ def main():
                     log(f"➡️ moved to {dest} ({status})")
                 except Exception as e:
                     log(f"❌ error processing {csv_path.name}: {e}")
-                    log(traceback.print_exc())
+                    log(traceback.format_exc())
                     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
                     dest = error_dir / f"{csv_path.stem}_{ts}.csv"
                     try:

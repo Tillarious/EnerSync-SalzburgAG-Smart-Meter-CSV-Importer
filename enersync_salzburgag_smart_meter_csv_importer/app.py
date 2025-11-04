@@ -157,7 +157,7 @@ def parse_csv_to_df(csv_path: Path, opts: dict) -> pd.DataFrame:
     log(f"  points: {len(d)}, time range: {d['ts_utc'].min()} – {d['ts_utc'].max()}")
     return d
 
-def apply_anchor(df: pd.DataFrame, opts: dict) -> pdDataFrame:
+def apply_anchor(df: pd.DataFrame, opts: dict) -> pd.DataFrame:
     anchor_kwh = opts.get("anchor_kwh")
     anchor_dt_local = opts.get("anchor_datetime")
     if not anchor_kwh or not anchor_dt_local:
@@ -321,7 +321,7 @@ def main():
                     log(f"➡️ moved to {dest} ({status})")
                 except Exception as e:
                     log(f"❌ error processing {csv_path.name}: {e}")
-                    log(traceback.format_exc())
+                    log(traceback.print_exc())
                     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
                     dest = error_dir / f"{csv_path.stem}_{ts}.csv"
                     try:

@@ -157,7 +157,7 @@ def parse_csv_to_df(csv_path: Path, opts: dict) -> pd.DataFrame:
     log(f"  points: {len(d)}, time range: {d['ts_utc'].min()} – {d['ts_utc'].max()}")
     return d
 
-def apply_anchor(df: pd.DataFrame, opts: dict) -> pd.DataFrame:
+def apply_anchor(df: pd.DataFrame, opts: dict) -> pdDataFrame:
     anchor_kwh = opts.get("anchor_kwh")
     anchor_dt_local = opts.get("anchor_datetime")
     if not anchor_kwh or not anchor_dt_local:
@@ -202,6 +202,16 @@ def load_state():
 def save_state(state: dict):
     STATE_PATH.write_text(json.dumps(state, indent=2))
 
+def build_metadata(opts, source_value: str):
+    return {
+        "statistic_id": opts["statistic_id"],
+        "unit_of_measurement": "kWh",
+        "name": opts["name"],
+        "source": source_value,     # must be a HA-accepted label
+        "has_mean": False,
+        "has_sum": True
+    }
+
 def process_csv(csv_path: Path, opts: dict):
     log(f"Processing: {csv_path.name}")
     d = parse_csv_to_df(csv_path, opts)
@@ -224,52 +234,62 @@ def process_csv(csv_path: Path, opts: dict):
 
     stats = build_stats(d)
 
-    # Minimal, broadly accepted metadata
-    metadata = {
-        "statistic_id": opts["statistic_id"],
-        "unit_of_measurement": "kWh",
-        "source": "enersync_csv_addon",
-        "name": opts["name"],
-        "has_mean": False,
-        "has_sum": True
-    }
+    # ---------- Probe for an accepted 'source' value ----------
+    candidate_sources = ["recorder", "integration", "api", "external", "custom"]
+    last_err = None
+    accepted_metadata = None
 
-    # ---- Single-row test via WS (metadata as dict) ----
-    log(f"  DEBUG WS test payload: {json.dumps({'metadata': metadata, 'stats': stats[:1]}, ensure_ascii=False)}")
-    try:
-        ws = ws_connect()
+    for src in candidate_sources:
+        meta_try = build_metadata(opts, src)
+        log(f"  DEBUG WS test payload (source='{src}'): {json.dumps({'metadata': meta_try, 'stats': stats[:1]}, ensure_ascii=False)}")
         try:
-            ws_cmd(ws, {
-                "id": 1,
-                "type": "recorder/import_statistics",
-                "metadata": metadata,   # dict for WS
-                "stats": stats[:1]
-            })
-            log("✅ WS accepted 1-row test")
-        finally:
-            try: ws.close()
-            except: pass
-    except Exception as e:
-        log(f"⚠ WS test failed: {e}")
-        log("  Trying REST fallback (older HA only)...")
+            ws = ws_connect()
+            try:
+                ws_cmd(ws, {
+                    "id": 1,
+                    "type": "recorder/import_statistics",
+                    "metadata": meta_try,   # dict for WS
+                    "stats": stats[:1]
+                })
+                log(f"✅ WS accepted 1-row test with source='{src}'")
+                accepted_metadata = meta_try
+                break
+            finally:
+                try: ws.close()
+                except: pass
+        except Exception as e:
+            last_err = e
+            msg = str(e)
+            if "Invalid source" in msg or "invalid_format" in msg or "home_assistant_error" in msg:
+                log(f"  ⚠ WS rejected source='{src}', trying next...")
+                continue
+            else:
+                log(f"  ⚠ WS test failed for other reason: {e}")
+                break
+
+    if accepted_metadata is None:
+        # Try REST fallback (uses list for metadata) with first candidate
+        src = candidate_sources[0]
+        meta_try = build_metadata(opts, src)
         try:
             ha_call_service("/api/services/recorder/import_statistics",
-                            {"metadata": [metadata], "stats": stats[:1]})
-            log("✅ REST accepted 1-row test")
+                            {"metadata": [meta_try], "stats": stats[:1]})
+            log(f"✅ REST accepted 1-row test with source='{src}'")
+            accepted_metadata = meta_try
         except Exception as e2:
-            raise RuntimeError(f"Both WS and REST import tests failed: {e2}")
+            raise RuntimeError(f"No accepted source for metadata; last WS error: {last_err}; REST also failed: {e2}")
 
-    # ---- Bulk import: WS preferred ----
+    # ---------- Bulk import ----------
     try:
-        ws_import_statistics(metadata, stats, int(opts.get("batch_size", 1000)))
+        ws_import_statistics(accepted_metadata, stats, int(opts.get("batch_size", 1000)))
     except Exception as e:
         log(f"⚠ WS bulk failed: {e}")
-        log("  Falling back to REST bulk (older HA only)...")
+        log("  Falling back to REST bulk...")
         total = len(stats); bs = int(opts.get("batch_size", 1000))
         for i in range(0, total, bs):
             part = stats[i:i+bs]
             ha_call_service("/api/services/recorder/import_statistics",
-                            {"metadata": [metadata], "stats": part})
+                            {"metadata": [accepted_metadata], "stats": part})
             log(f"→ REST imported {i+len(part)}/{total}")
 
     # watermark update

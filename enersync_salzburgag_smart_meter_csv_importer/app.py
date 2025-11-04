@@ -22,16 +22,31 @@ def ha_call(path, data):
         raise RuntimeError("ha_token is empty. Create a Long-Lived Access Token in HA Profile and paste it into add-on options.")
     url = base + path
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    r = requests.post(url, headers=headers, json=data, timeout=60)
+    r = requests.post(url, headers=headers, json=data, timeout=120)
     if r.status_code not in (200, 201):
-        raise RuntimeError(f"HA API call failed {r.status_code}: {r.text}")
+        # Try to surface HA's JSON error details if available
+        try:
+            err = r.json()
+        except Exception:
+            err = r.text
+        raise RuntimeError(f"HA API call failed {r.status_code}: {err}")
 
 def import_statistics(metadata: dict, stats: list, batch_size: int):
+    """
+    Home Assistant expects:
+      {
+        "metadata": [ { ... } ],   # LIST, not dict
+        "stats":    [ { ... }, ... ]
+      }
+    """
+    # Send in batches
     total = len(stats)
     for i in range(0, total, batch_size):
         part = stats[i:i+batch_size]
-        ha_call("/api/services/recorder/import_statistics", {"metadata": metadata, "stats": part})
+        payload = {"metadata": [metadata], "stats": part}
+        ha_call("/api/services/recorder/import_statistics", payload)
         log(f"→ Imported {i+len(part)}/{total}")
+
 
 def _auto_sep(sample: str) -> str:
     # Guess delimiter by frequency

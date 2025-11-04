@@ -1,0 +1,84 @@
+name: EnerSync – SalzburgAG Smart Meter CSV Importer
+version: "1.2.0"
+slug: enersync_salzburgag_smart_meter_csv_importer
+description: "Import SalzburgAG smart‑meter CSV into Home Assistant energy statistics via REST API, with calibration & watermark."
+startup: services
+boot: auto
+init: false
+
+# We intentionally do NOT request supervisor tokens (works in any HA install).
+homeassistant_api: false
+hassio_api: false
+
+map:
+  - share:rw
+  - config:rw
+  - data:rw
+
+arch:
+  - amd64
+  - aarch64
+  - armv7
+
+options:
+  # --- CSV input/output paths ---
+  input_dir: /share/enersync/input
+  processed_dir: /share/enersync/processed
+  error_dir: /share/enersync/error
+
+  # --- CSV parsing (fully configurable) ---
+  csv_glob: "*.csv"              # pattern of files to pick up
+  csv_encoding: "utf-8"          # e.g. "latin1"
+  csv_sep: "auto"                # "auto" or a single char like ";" or ","
+  csv_decimal: "auto"            # "auto" or "." or ","
+  csv_dayfirst: true             # dates like 31.12.2025
+  csv_datetime_col: ""           # override column name; else auto-detect
+  csv_value_col: ""              # override column name; else auto-detect
+  csv_status_col: ""             # optional; else ignored
+  csv_valid_status_regex: "(?i)wert ist gültig"  # set "" to accept all
+
+  # --- Timezone & grouping ---
+  timezone: Europe/Vienna
+  dedup: sum                     # sum | first | mean
+
+  # --- Calibration (align to a known meter reading at a given local time) ---
+  anchor_kwh: null               # e.g. 7536.55
+  anchor_datetime: null          # e.g. "30.06.2025 00:00"
+
+  # --- HA REST API target (LLAT) ---
+  ha_base_url: "http://homeassistant:8123"
+  ha_token: ""                   # paste a Long-Lived Access Token here (Profile → Tokens)
+
+  # --- Statistics import target in HA ---
+  statistic_id: sensor.energy_grid_import
+  name: "EnerSync Grid Import"
+
+  # --- Import behavior ---
+  batch_size: 1000
+  scan_interval_seconds: 60
+  reset_watermark: false         # if true, next run re-imports from earliest point
+
+schema:
+  input_dir: str
+  processed_dir: str
+  error_dir: str
+  csv_glob: str
+  csv_encoding: str
+  csv_sep: str
+  csv_decimal: str
+  csv_dayfirst: bool
+  csv_datetime_col: str
+  csv_value_col: str
+  csv_status_col: str
+  csv_valid_status_regex: str
+  timezone: str
+  dedup: list(sum|first|mean)
+  anchor_kwh: float?
+  anchor_datetime: str?
+  ha_base_url: str
+  ha_token: str
+  statistic_id: str
+  name: str
+  batch_size: int
+  scan_interval_seconds: int
+  reset_watermark: bool

@@ -4,7 +4,7 @@ from datetime import datetime
 import pandas as pd
 from dateutil import tz
 import requests
-import websocket  # provided by py3-websocket-client
+import websocket  # requires py3-websocket-client in the image
 
 OPTIONS_PATH = Path("/data/options.json")
 STATE_PATH = Path("/data/salznetze_state.json")
@@ -17,7 +17,7 @@ def load_options():
 
 # -------------------- REST (fallback only) --------------------
 def ha_call_service(path, data):
-    """Fallback to old service path if needed (rare)."""
+    """Fallback to legacy REST service, which expects metadata as a LIST."""
     opts = load_options()
     base = opts["ha_base_url"].rstrip("/")
     token = opts["ha_token"]
@@ -31,11 +31,12 @@ def ha_call_service(path, data):
         except Exception: err = r.text
         raise RuntimeError(f"REST call FAILED {r.status_code}: {err}")
 
-# -------------------- WebSocket (preferred) --------------------
+# -------------------- WebSocket (preferred on current HA) --------------------
 def ws_connect():
     opts = load_options()
     base = opts["ha_base_url"].rstrip("/")
     token = opts["ha_token"]
+
     if base.startswith("http://"):
         ws_url = base.replace("http://", "ws://") + "/api/websocket"
     elif base.startswith("https://"):
@@ -57,30 +58,27 @@ def ws_cmd(ws, payload):
     ws.send(json.dumps(payload))
     reply = json.loads(ws.recv())
     if not reply.get("success", False):
-        # In some versions, result is the reply itself
         raise RuntimeError(f"WS command failed: {reply}")
     return reply
 
-def ws_import_statistics(metadata_list, stats_list, chunk=1000):
+def ws_import_statistics(metadata: dict, stats_list: list, chunk=1000):
     """
     Send recorder/import_statistics over WS in chunks.
-    metadata_list: list with ONE metadata dict
-    stats_list: list of rows {start, sum} (UTC ISO with Z)
+    On your HA version, WS expects: metadata = dict, stats = list.
     """
     ws = ws_connect()
     try:
-        # HA expects: type="recorder/import_statistics"
-        # payload keys: metadata (list), stats (list)
-        for i in range(0, len(stats_list), chunk):
+        total = len(stats_list)
+        for i in range(0, total, chunk):
             part = stats_list[i:i+chunk]
             req = {
                 "id": 1000 + i,
                 "type": "recorder/import_statistics",
-                "metadata": metadata_list,
+                "metadata": metadata,   # dict (NOT list) for WS
                 "stats": part
             }
-            reply = ws_cmd(ws, req)
-            log(f"→ WS imported {i+len(part)}/{len(stats_list)}")
+            ws_cmd(ws, req)
+            log(f"→ WS imported {i+len(part)}/{total}")
     finally:
         try: ws.close()
         except: pass
@@ -96,14 +94,19 @@ def read_csv_flexible(csv_path: Path, enc: str, sep_opt: str, dec_opt: str) -> p
     sep = _auto_sep(raw) if sep_opt == "auto" else (sep_opt or ",")
     return pd.read_csv(csv_path, sep=sep, engine="python", encoding=enc)
 
-def detect_columns(df, dt_override, val_override, st_override):
-    if dt_override: dt = dt_override
+def detect_columns(df: pd.DataFrame, dt_override: str, val_override: str, st_override: str):
+    if dt_override:
+        dt = dt_override
     else:
         dt = next((c for c in df.columns if re.search(r"(datum|zeitpunkt|timestamp|time)", c, re.I)), None)
-    if val_override: val = val_override
+
+    if val_override:
+        val = val_override
     else:
         val = next((c for c in df.columns if re.search(r"(kwh|wh|energie|verbrauch)", c, re.I)), None)
+
     st = st_override or next((c for c in df.columns if re.search(r"status|qualit", c, re.I)), None)
+
     if not dt or not val:
         raise RuntimeError(f"Unable to detect timestamp/value columns in {list(df.columns)}; set csv_datetime_col/csv_value_col.")
     return dt, val, st
@@ -111,7 +114,9 @@ def detect_columns(df, dt_override, val_override, st_override):
 def parse_csv_to_df(csv_path: Path, opts: dict) -> pd.DataFrame:
     log(f"  reading CSV: {csv_path}")
     df = read_csv_flexible(csv_path, opts["csv_encoding"], opts["csv_sep"], opts["csv_decimal"])
-    dt_col, val_col, st_col = detect_columns(df, opts.get("csv_datetime_col",""), opts.get("csv_value_col",""), opts.get("csv_status_col",""))
+    dt_col, val_col, st_col = detect_columns(
+        df, opts.get("csv_datetime_col",""), opts.get("csv_value_col",""), opts.get("csv_status_col","")
+    )
 
     ts = pd.to_datetime(df[dt_col], dayfirst=bool(opts["csv_dayfirst"]), errors="coerce")
 
@@ -134,9 +139,12 @@ def parse_csv_to_df(csv_path: Path, opts: dict) -> pd.DataFrame:
 
     how = opts["dedup"] if opts["dedup"] in {"sum","first","mean"} else "sum"
     d = pd.DataFrame({"ts_local": ts_local, "ts_utc": ts_utc, "kwh": d["kwh"]})
-    if how == "sum":   d = d.groupby("ts_local", as_index=False)["kwh"].sum()
-    elif how == "first": d = d.groupby("ts_local", as_index=False)["kwh"].first()
-    else:              d = d.groupby("ts_local", as_index=False)["kwh"].mean()
+    if how == "sum":
+        d = d.groupby("ts_local", as_index=False)["kwh"].sum()
+    elif how == "first":
+        d = d.groupby("ts_local", as_index=False)["kwh"].first()
+    else:
+        d = d.groupby("ts_local", as_index=False)["kwh"].mean()
 
     d = d.assign(ts_utc=d["ts_local"].dt.tz_convert("UTC")).sort_values("ts_utc")
     d["sum_csv_kwh"] = d["kwh"].cumsum()
@@ -163,7 +171,8 @@ def apply_anchor(df: pd.DataFrame, opts: dict) -> pd.DataFrame:
             if fmt == "%d.%m.%Y":
                 parsed = parsed.replace(hour=0, minute=0, second=0)
             break
-        except ValueError: continue
+        except ValueError:
+            continue
     if parsed is None:
         raise RuntimeError("Could not parse anchor_datetime (use DD.MM.YYYY [HH:MM])")
 
@@ -177,7 +186,7 @@ def apply_anchor(df: pd.DataFrame, opts: dict) -> pd.DataFrame:
     return df
 
 def build_stats(df: pd.DataFrame) -> list:
-    # Minimal rows: start + sum. UTC with Z suffix.
+    # Minimal rows: start + sum (UTC with Z suffix). Sum must be non-decreasing.
     return [
         {"start": row["ts_utc"].strftime("%Y-%m-%dT%H:%M:%SZ"),
          "sum": round(float(row["sum_kwh"]), 6)}
@@ -198,6 +207,7 @@ def process_csv(csv_path: Path, opts: dict):
     d = parse_csv_to_df(csv_path, opts)
     d = apply_anchor(d, opts)
 
+    # watermark
     state = load_state()
     if opts.get("reset_watermark"):
         state.pop("last_ts_utc", None); save_state(state); log("  watermark: reset requested")
@@ -214,48 +224,52 @@ def process_csv(csv_path: Path, opts: dict):
 
     stats = build_stats(d)
 
+    # Minimal, broadly accepted metadata
     metadata = {
         "statistic_id": opts["statistic_id"],
         "unit_of_measurement": "kWh",
         "source": "enersync_csv_addon",
         "name": opts["name"],
-        # minimal, broadly accepted flags:
         "has_mean": False,
         "has_sum": True
     }
-    meta_list = [metadata]
 
-    # One-row smoke test via WS
-    test_payload = {"metadata": meta_list, "stats": stats[:1]}
-    log(f"  DEBUG WS test payload: {json.dumps(test_payload, ensure_ascii=False)}")
+    # ---- Single-row test via WS (metadata as dict) ----
+    log(f"  DEBUG WS test payload: {json.dumps({'metadata': metadata, 'stats': stats[:1]}, ensure_ascii=False)}")
     try:
         ws = ws_connect()
         try:
-            reply = ws_cmd(ws, {"id": 1, "type": "recorder/import_statistics", **test_payload})
+            ws_cmd(ws, {
+                "id": 1,
+                "type": "recorder/import_statistics",
+                "metadata": metadata,   # dict for WS
+                "stats": stats[:1]
+            })
             log("✅ WS accepted 1-row test")
         finally:
-            ws.close()
+            try: ws.close()
+            except: pass
     except Exception as e:
         log(f"⚠ WS test failed: {e}")
         log("  Trying REST fallback (older HA only)...")
         try:
-            ha_call_service("/api/services/recorder/import_statistics", test_payload)
+            ha_call_service("/api/services/recorder/import_statistics",
+                            {"metadata": [metadata], "stats": stats[:1]})
             log("✅ REST accepted 1-row test")
         except Exception as e2:
             raise RuntimeError(f"Both WS and REST import tests failed: {e2}")
 
-    # Bulk import via WS (preferred)
+    # ---- Bulk import: WS preferred ----
     try:
-        ws_import_statistics(meta_list, stats, int(opts.get("batch_size", 1000)))
+        ws_import_statistics(metadata, stats, int(opts.get("batch_size", 1000)))
     except Exception as e:
         log(f"⚠ WS bulk failed: {e}")
         log("  Falling back to REST bulk (older HA only)...")
-        # chunked REST fallback
         total = len(stats); bs = int(opts.get("batch_size", 1000))
         for i in range(0, total, bs):
             part = stats[i:i+bs]
             ha_call_service("/api/services/recorder/import_statistics",
-                            {"metadata": meta_list, "stats": part})
+                            {"metadata": [metadata], "stats": part})
             log(f"→ REST imported {i+len(part)}/{total}")
 
     # watermark update
@@ -282,15 +296,17 @@ def main():
                 try:
                     status = process_csv(csv_path, opts)
                     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-                    shutil.move(str(csv_path), str(processed_dir / f"{csv_path.stem}_{ts}.csv"))
-                    log(f"➡️ moved to processed ({status})")
+                    dest = processed_dir / f"{csv_path.stem}_{ts}.csv"
+                    shutil.move(str(csv_path), str(dest))
+                    log(f"➡️ moved to {dest} ({status})")
                 except Exception as e:
                     log(f"❌ error processing {csv_path.name}: {e}")
                     log(traceback.format_exc())
                     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+                    dest = error_dir / f"{csv_path.stem}_{ts}.csv"
                     try:
-                        shutil.move(str(csv_path), str(error_dir / f"{csv_path.stem}_{ts}.csv"))
-                        log(f"➡️ moved to error")
+                        shutil.move(str(csv_path), str(dest))
+                        log(f"➡️ moved to {dest}")
                     except Exception as e2:
                         log(f"❌ move-to-error failed: {e2}")
             time.sleep(int(opts.get("scan_interval_seconds", 60)))

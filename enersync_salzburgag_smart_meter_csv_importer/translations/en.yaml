@@ -1,0 +1,77 @@
+configuration:
+  input_dir:
+    name: CSV input directory
+    description: Folder watched for new CSV files (default /share/enersync/input).
+  processed_dir:
+    name: Processed directory
+    description: Imported CSVs are moved here (default /share/enersync/processed).
+  error_dir:
+    name: Error directory
+    description: Failed CSVs are moved here (default /share/enersync/error).
+
+  csv_glob:
+    name: CSV filename pattern
+    description: Glob for files to import (e.g. *.csv).
+  csv_encoding:
+    name: CSV encoding
+    description: File character encoding (utf-8, latin1, …).
+  csv_sep:
+    name: Column separator
+    description: Fixed separator like “;” or “,” — or “auto” to detect.
+  csv_decimal:
+    name: Decimal separator
+    description: "Use: auto, '.' or ','."
+  csv_dayfirst:
+    name: European date format (DD.MM.YYYY)
+    description: Enable if timestamps are day-first.
+
+  csv_datetime_col:
+    name: Timestamp column name
+    description: Override the column containing timestamps. Leave empty to autodetect.
+  csv_value_col:
+    name: Energy value column name
+    description: Override the column with energy values (kWh). Leave empty to autodetect.
+  csv_status_col:
+    name: Status column name (optional)
+    description: Optional column with quality/status flags.
+  csv_valid_status_regex:
+    name: Valid status regex
+    description: Only rows with a status matching this regular expression are imported. Leave empty to accept all.
+
+  timezone:
+    name: Timezone
+    description: Parsing timezone for timestamps (e.g., Europe/Vienna).
+  dedup:
+    name: Duplicate handling
+    description: If multiple rows exist for the same interval, choose how to combine (sum/first/mean).
+
+  anchor_kwh:
+    name: Calibration meter reading (kWh)
+    description: Real meter value to align the cumulative sum to.
+  anchor_datetime:
+    name: Calibration timestamp (local)
+    description: "Local timestamp of the real meter reading, e.g. 30.06.2025 00:00."
+
+  ha_base_url:
+    name: Home Assistant base URL
+    description: Internal URL of your HA (default http://homeassistant:8123).
+  ha_token:
+    name: Home Assistant long-lived token
+    description: Create it in Profile → Long-Lived Access Tokens and paste here.
+
+  statistic_id:
+    name: Statistic ID
+    description: Target statistics entity (e.g., sensor.stromverbrauch_salzburgAG).
+  name:
+    name: Statistic name
+    description: Human-readable name shown in Recorder statistics.
+
+  batch_size:
+    name: Upload batch size
+    description: Number of rows per upload request (default 1000).
+  scan_interval_seconds:
+    name: Scan interval (seconds)
+    description: How often to check the input folder for new CSVs.
+  reset_watermark:
+    name: Reset import watermark
+    description: Set to true once to re-import from earliest data; set back to false afterwards.

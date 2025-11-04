@@ -1,0 +1,77 @@
+configuration:
+  input_dir:
+    name: CSV Eingabeverzeichnis
+    description: Ordner, der auf neue CSV-Dateien überwacht wird (Standard /share/enersync/input).
+  processed_dir:
+    name: Verzeichnis für verarbeitete Dateien
+    description: Importierte CSVs werden hierhin verschoben (Standard /share/enersync/processed).
+  error_dir:
+    name: Fehlerverzeichnis
+    description: Fehlgeschlagene CSVs werden hierhin verschoben (Standard /share/enersync/error).
+
+  csv_glob:
+    name: CSV Dateimuster
+    description: Glob-Muster der zu importierenden Dateien (z. B. *.csv).
+  csv_encoding:
+    name: CSV Zeichencodierung
+    description: Datei-Codierung (utf-8, latin1, …).
+  csv_sep:
+    name: Spaltentrenner
+    description: Fester Trenner wie „;“ oder „,“ — oder „auto“ für automatische Erkennung.
+  csv_decimal:
+    name: Dezimaltrennzeichen
+    description: "Verwenden: auto, '.' oder ','."
+  csv_dayfirst:
+    name: Europäisches Datumsformat (TT.MM.JJJJ)
+    description: Aktivieren, wenn Zeitstempel tage-zuerst sind.
+
+  csv_datetime_col:
+    name: Zeitstempel-Spaltenname
+    description: Spalte mit Datum/Zeit. Leer lassen für Auto-Erkennung.
+  csv_value_col:
+    name: Energie-Wert Spaltenname
+    description: Spalte mit Energieverbrauch (kWh). Leer lassen für Auto-Erkennung.
+  csv_status_col:
+    name: Status-Spaltenname (optional)
+    description: Optionale Spalte mit Qualitäts-/Statusangaben.
+  csv_valid_status_regex:
+    name: Gültigkeits-Regex
+    description: Es werden nur Zeilen importiert, deren Status auf diesen regulären Ausdruck passt. Leer lassen für alle.
+
+  timezone:
+    name: Zeitzone
+    description: Zeitzone für das Parsen (z. B. Europe/Vienna).
+  dedup:
+    name: Duplikatbehandlung
+    description: Wie mehrere Einträge für dasselbe Intervall zusammengeführt werden (sum/first/mean).
+
+  anchor_kwh:
+    name: Kalibrierung Zählerstand (kWh)
+    description: Realer Zählerstand zur Ausrichtung der kumulierten Summe.
+  anchor_datetime:
+    name: Kalibrierzeitpunkt (lokal)
+    description: "Lokaler Zeitpunkt des realen Zählerstands, z. B. 30.06.2025 00:00."
+
+  ha_base_url:
+    name: Home Assistant Basis-URL
+    description: Interne URL deiner HA-Instanz (Standard http://homeassistant:8123).
+  ha_token:
+    name: Home Assistant Langzeit-Token
+    description: Im Profil unter „Langzeit-Tokens“ anlegen und hier einfügen.
+
+  statistic_id:
+    name: Statistik-ID
+    description: Ziel-Statistik-Entität (z. B. sensor.stromverbrauch_salzburgAG).
+  name:
+    name: Statistikname
+    description: Anzeigename in den Recorder-Statistiken.
+
+  batch_size:
+    name: Upload-Batchgröße
+    description: Anzahl Zeilen pro Upload (Standard 1000).
+  scan_interval_seconds:
+    name: Scan-Intervall (Sekunden)
+    description: Suchintervall für neue CSV-Dateien.
+  reset_watermark:
+    name: Import-Wasserzeichen zurücksetzen
+    description: Einmalig auf true setzen, um erneut ab dem frühesten Zeitpunkt zu importieren; danach wieder auf false.

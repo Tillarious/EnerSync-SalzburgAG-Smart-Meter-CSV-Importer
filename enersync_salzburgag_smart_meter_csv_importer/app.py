@@ -194,10 +194,14 @@ def process_csv(csv_path: Path, opts: dict):
     stats = build_stats(d)
     metadata = {
         "statistic_id": opts["statistic_id"],
+        "name": opts["name"],
+        "source": "enersync_csv_addon",
         "unit_of_measurement": "kWh",
-        "source": "salzburgnetze_csv_addon",
-        "name": opts["name"]
-    }
+        "unit_class": "energy",   # helps HA classify correctly
+        "has_mean": False,
+        "has_sum": True
+        }
+        
     import_statistics(metadata, stats, int(opts.get("batch_size", 1000)))
     new_last = d["ts_utc"].max().isoformat()
     state["last_ts_utc"] = new_last; save_state(state)

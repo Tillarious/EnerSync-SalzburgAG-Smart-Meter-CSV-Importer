@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#test
 set -euo pipefail
 
 echo "[run.sh] reading options.json..."

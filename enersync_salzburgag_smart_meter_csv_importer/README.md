@@ -1,6 +1,6 @@
 # EnerSync – SalzburgAG Smart Meter CSV Importer
 
-Import SalzburgAG smart-meter CSV data into Home Assistant energy statistics.
+Import SalzburgAG smart-meter CSV data into Home Assistant Energy statistics.
 
 **How it works**
 - Watches `/share/enersync/input` for `*.csv`

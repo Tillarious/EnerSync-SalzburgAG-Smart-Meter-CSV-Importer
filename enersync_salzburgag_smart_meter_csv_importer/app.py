@@ -201,7 +201,18 @@ def process_csv(csv_path: Path, opts: dict):
         "has_mean": False,
         "has_sum": True
         }
-        
+
+    test_payload = {
+    "metadata": [metadata],
+    "stats": build_stats(d.head(1))  # send just the first point
+}
+try:
+    ha_call("/api/services/recorder/import_statistics", test_payload)
+    log("✅ test import accepted")
+except Exception as e:
+    log(f"❌ test import failed: {e}")
+    raise
+       
     import_statistics(metadata, stats, int(opts.get("batch_size", 1000)))
     new_last = d["ts_utc"].max().isoformat()
     state["last_ts_utc"] = new_last; save_state(state)

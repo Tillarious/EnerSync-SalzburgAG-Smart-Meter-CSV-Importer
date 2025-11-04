@@ -1,116 +1,96 @@
 {
-  "config": {
-    "step": {
-      "user": {
-        "title": "EnerSync – SalzburgAG Smart Meter Importer",
-        "description": "Configuration for CSV → Home Assistant Smart-Meter Import"
-      }
-    },
-    "error": {},
-    "abort": {}
-  },
-  "options": {
-    "step": {
-      "user": {
-        "title": "EnerSync Settings",
-        "description": "Tune CSV parsing and import behaviour"
-      }
-    },
-    "error": {},
-    "abort": {}
-  },
-  "common": {
-    "name": "Name",
-    "required": "Required"
-  },
   "field": {
     "input_dir": {
       "name": "CSV Input Directory",
-      "description": "Folder where CSV files are placed for import."
+      "description": "Folder watched for new CSV files. Default: /share/enersync/input"
     },
     "processed_dir": {
-      "name": "Processed CSV Directory",
-      "description": "CSV files will be moved here after import."
+      "name": "Processed Directory",
+      "description": "Imported CSVs are moved here. Default: /share/enersync/processed"
     },
     "error_dir": {
       "name": "Error Directory",
-      "description": "CSV files that fail to import will be moved here."
+      "description": "Failed CSVs are moved here. Default: /share/enersync/error"
     },
     "csv_glob": {
       "name": "CSV Filename Pattern",
-      "description": "File mask for CSV files to import. Default: *.csv"
+      "description": "Glob pattern of files to import, e.g. *.csv"
     },
     "csv_encoding": {
       "name": "CSV Encoding",
-      "description": "Character encoding of CSV (utf-8, latin1, …)"
+      "description": "File character encoding, e.g. utf-8 or latin1"
     },
     "csv_sep": {
       "name": "Column Separator",
-      "description": "Set a separator (e.g., ; or ,) or use auto-detect."
+      "description": "Use a specific separator like ';' or ',' or set 'auto' to detect."
     },
     "csv_decimal": {
       "name": "Decimal Separator",
-      "description": "\"auto\" detects automatically. Set \".\" or \",\" manually if needed."
+      "description": "'auto', '.' or ','"
     },
     "csv_dayfirst": {
       "name": "European Date Format",
-      "description": "Enable if your CSV uses DD.MM.YYYY format."
+      "description": "Enable if your CSV uses DD.MM.YYYY or similar format."
     },
     "csv_datetime_col": {
       "name": "Timestamp Column Name",
-      "description": "Column with date/time values. Leave empty to auto-detect."
+      "description": "Override the column that contains timestamps. Leave empty to autodetect."
     },
     "csv_value_col": {
-      "name": "Energy Value Column",
-      "description": "Column with energy usage values (kWh). Leave empty to auto-detect."
+      "name": "Energy Value Column Name",
+      "description": "Override the column with energy values (kWh). Leave empty to autodetect."
     },
     "csv_status_col": {
-      "name": "Status Column",
-      "description": "Column containing quality flags (optional)."
+      "name": "Status Column Name",
+      "description": "Optional column with quality/status flags (e.g., 'Wert ist gültig')."
     },
     "csv_valid_status_regex": {
       "name": "Valid Status Regex",
-      "description": "Rows must match this regex to be used. Leave blank to accept all."
+      "description": "Only rows matching this regular expression are imported. Leave empty to accept all."
     },
     "timezone": {
       "name": "Timezone",
-      "description": "Timezone used for interpreting timestamps."
+      "description": "Parsing timezone for timestamps (e.g., Europe/Vienna)."
     },
     "dedup": {
       "name": "Duplicate Handling",
-      "description": "If multiple records exist for same timestamp, choose how to combine."
+      "description": "If multiple rows exist for the same interval, choose how to combine them."
     },
     "anchor_kwh": {
-      "name": "Meter Calibration (kWh)",
-      "description": "Known real meter reading to align CSV data."
+      "name": "Calibration Meter Reading (kWh)",
+      "description": "Real meter value to align the cumulative sum."
     },
     "anchor_datetime": {
-      "name": "Calibration Timestamp",
-      "description": "Date/time of the real meter reading above."
+      "name": "Calibration Timestamp (Local)",
+      "description": "Local timestamp of the real meter reading (DD.MM.YYYY [HH:MM])."
     },
     "ha_base_url": {
-      "name": "Home Assistant URL",
-      "description": "Internal URL. Usually http://homeassistant:8123"
+      "name": "Home Assistant Base URL",
+      "description": "Internal URL of your HA (default http://homeassistant:8123)."
     },
     "ha_token": {
-      "name": "Home Assistant Token",
-      "description": "Long-lived access token from HA user profile."
+      "name": "Home Assistant Long-Lived Token",
+      "description": "Create it in Profile → Long-Lived Access Tokens, then paste here."
     },
     "statistic_id": {
-      "name": "Home Assistant Statistic ID",
-      "description": "Statistic entity to write data into."
+      "name": "Statistic ID",
+      "description": "The statistics entity to write cumulative energy into (e.g., sensor.stromverbrauch_salzburgAG)."
+    },
+    "name": {
+      "name": "Statistic Name",
+      "description": "Human readable name shown in Recorder stats."
     },
     "batch_size": {
       "name": "Upload Batch Size",
-      "description": "Number of records uploaded per batch."
+      "description": "How many rows to upload per request to HA (default 1000)."
     },
     "scan_interval_seconds": {
-      "name": "Scan Interval",
-      "description": "How often to check for new CSVs."
+      "name": "Scan Interval (seconds)",
+      "description": "How often to check the input folder for new CSV files."
     },
     "reset_watermark": {
       "name": "Reset Import Watermark",
-      "description": "Force re-import from earliest timestamp on next run."
+      "description": "Set true once to re-import from the earliest timestamp, then set back to false."
     }
   }
 }

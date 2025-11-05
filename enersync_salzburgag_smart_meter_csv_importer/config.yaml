@@ -20,7 +20,12 @@ arch:
   - aarch64
   - armv7
 
+ports:
+  "8099/tcp": 8099
+
 options:
+  # --- enable uploader ---
+  enable_uploader: true
   # --- CSV input/output paths ---
   input_dir: /share/enersync/input
   processed_dir: /share/enersync/processed
@@ -59,6 +64,7 @@ options:
   reset_watermark: false         # if true, next run re-imports from earliest point
 
 schema:
+  enable_uploader: bool?
   input_dir: str
   processed_dir: str
   error_dir: str

@@ -162,7 +162,7 @@ def parse_csv_to_df(csv_path: Path, opts: dict) -> pd.DataFrame:
 
     s = df[val_col].astype(str)
     if opts["csv_decimal"] == "auto":
-        if s.str.contains(",").sum() > s.str_contains(r"\.").sum():
+        if s.str.contains(",").sum() > s.str.contains(r"\.").sum():
             s = s.str.replace(".", "", regex=False).str.replace(",", ".", regex=False)
     elif opts["csv_decimal"] == ",":
         s = s.str.replace(".", "", regex=False).str.replace(",", ".", regex=False)

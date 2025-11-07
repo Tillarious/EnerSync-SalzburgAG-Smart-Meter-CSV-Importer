@@ -1,13 +1,15 @@
+#!/usr/bin/env python3
+# EnerSync – SalzburgAG Smart Meter CSV Importer
+# Resume + Anchor + Daily-Fixup + Drop-Upload
 import os, time, json, re, shutil, traceback, threading
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 import pandas as pd
 from dateutil import tz
 import requests
-import websocket  # requires py3-websocket-client in the image
+import websocket  # py3-websocket-client
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from io import BytesIO
-import cgi
+import cgi  # stdlib (deprecated warning ok for simple upload form)
 
 OPTIONS_PATH = Path("/data/options.json")
 STATE_PATH = Path("/data/salznetze_state.json")
@@ -18,11 +20,13 @@ def load_options():
     with open(OPTIONS_PATH, "r", encoding="utf-8") as f:
         return json.load(f)
 
-# -------------------- WebSocket (for import) --------------------
+# -------------------- WebSocket (for import & sometimes read) --------------------
 def ws_connect():
     opts = load_options()
     base = opts["ha_base_url"].rstrip("/")
     token = opts["ha_token"]
+    if not token:
+        raise RuntimeError("ha_token missing—create a Long-Lived Access Token and paste it into options.")
     if base.startswith("http://"):
         ws_url = base.replace("http://", "ws://") + "/api/websocket"
     elif base.startswith("https://"):
@@ -47,6 +51,7 @@ def ws_cmd(ws, payload):
     return reply
 
 def import_statistics_ws(metadata: dict, stats_list: list, chunk=1000):
+    """recorder/import_statistics via WS (metadata=dict, stats=list)."""
     ws = ws_connect()
     try:
         total = len(stats_list)
@@ -55,7 +60,7 @@ def import_statistics_ws(metadata: dict, stats_list: list, chunk=1000):
             req = {
                 "id": 1000 + i,
                 "type": "recorder/import_statistics",
-                "metadata": metadata,   # dict for WS
+                "metadata": metadata,
                 "stats": part
             }
             ws_cmd(ws, req)
@@ -69,6 +74,8 @@ def ha_rest_get(path, params=None):
     opts = load_options()
     base = opts["ha_base_url"].rstrip("/")
     token = opts["ha_token"]
+    if not token:
+        raise RuntimeError("ha_token missing.")
     url = base + path
     headers = {"Authorization": f"Bearer {token}"}
     r = requests.get(url, headers=headers, params=params or {}, timeout=120)
@@ -88,13 +95,13 @@ def ha_call_service(path, data):
         except Exception: err = r.text
         raise RuntimeError(f"REST call FAILED {r.status_code}: {err}")
 
-# -------------------- Read last stat (WS -> REST fallback) --------------------
+# -------------------- Read last statistic (WS → REST fallback) --------------------
 def get_last_stat_from_ha(statistic_id: str):
     """
     Returns (last_start_utc: datetime, last_sum: float) or (None, None).
-    Tries WS (if available on your build), else multiple REST endpoints.
+    Tries WS 'recorder/get_statistics' (if supported), else several REST endpoints.
     """
-    # 1) Try WS (some builds support recorder/get_statistics)
+    # Try WS first
     try:
         ws = ws_connect()
         try:
@@ -120,40 +127,34 @@ def get_last_stat_from_ha(statistic_id: str):
             try: ws.close()
             except: pass
     except Exception as e:
-        # If it's unknown_command we just proceed to REST
         msg = str(e)
         if "unknown_command" not in msg:
             log(f"  get_last via WS failed non-fatally: {e}")
 
-    # 2) Try REST variants (HA changed these a few times over releases)
+    # REST fallbacks across HA versions
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=365*5)
     iso = lambda dt: dt.isoformat()
-
     candidates = [
-        ("/api/history/statistics/during_period",  # older
+        ("/api/history/statistics/during_period",
          {"start_time": iso(start), "end_time": iso(end), "statistic_ids": statistic_id, "period": "hour"}),
-        ("/api/history/statistics",               # variant
+        ("/api/history/statistics",
          {"start_time": iso(start), "end_time": iso(end), "statistic_ids": statistic_id, "period": "hour"}),
-        ("/api/recorder/statistics_during_period",# newer recorder path in some builds
+        ("/api/recorder/statistics_during_period",
          {"start_time": iso(start), "end_time": iso(end), "statistic_ids": statistic_id, "period": "hour"}),
-        ("/api/recorder/statistics",              # another variant
+        ("/api/recorder/statistics",
          {"start_time": iso(start), "end_time": iso(end), "statistic_ids": statistic_id, "period": "hour"}),
     ]
-
     for path, params in candidates:
         try:
             data = ha_rest_get(path, params)
-            # normalize: could be dict{stat_id:[...]} or list of entries
             series = []
             if isinstance(data, dict):
                 series = data.get(statistic_id) or []
             elif isinstance(data, list):
-                # might be list of entries each with statistic_id
                 series = [x for x in data if x.get("statistic_id") == statistic_id]
             if not series:
                 continue
-            # ensure chronological
             def parse_start(x):
                 s = x.get("start") or x.get("start_time")
                 return datetime.fromisoformat(s.replace("Z","+00:00"))
@@ -163,32 +164,26 @@ def get_last_stat_from_ha(statistic_id: str):
             last_start = datetime.fromisoformat(last_start_s.replace("Z","+00:00"))
             last_sum = float(last.get("sum", 0.0))
             return (last_start, last_sum)
-        except Exception as e:
-            # try next candidate
+        except Exception:
             continue
-
     return (None, None)
 
-# -------------------- CSV & hourly build --------------------
+# -------------------- CSV parsing & hourly build --------------------
 def _auto_sep(sample: str) -> str:
     cands = [",",";","\t","|"]
     counts = {c: sample.count(c) for c in cands}
     return max(counts, key=counts.get) if any(counts.values()) else ","
 
-def read_csv_flexible(csv_path: Path, enc: str, sep_opt: str, dec_opt: str) -> pd.DataFrame:
+def read_csv_flexible(csv_path: Path, enc: str, sep_opt: str) -> pd.DataFrame:
     raw = csv_path.read_text(encoding=enc, errors="ignore")
     sep = _auto_sep(raw) if sep_opt == "auto" else (sep_opt or ",")
     return pd.read_csv(csv_path, sep=sep, engine="python", encoding=enc)
 
 def detect_columns(df: pd.DataFrame, dt_override: str, val_override: str, st_override: str):
-    if dt_override:
-        dt = dt_override
-    else:
-        dt = next((c for c in df.columns if re.search(r"(datum|zeitpunkt|timestamp|time)", c, re.I)), None)
-    if val_override:
-        val = val_override
-    else:
-        val = next((c for c in df.columns if re.search(r"(kwh|wh|energie|verbrauch|restverbrauch)", c, re.I)), None)
+    if dt_override: dt = dt_override
+    else: dt = next((c for c in df.columns if re.search(r"(datum|zeitpunkt|timestamp|time)", c, re.I)), None)
+    if val_override: val = val_override
+    else: val = next((c for c in df.columns if re.search(r"(kwh|wh|energie|verbrauch|restverbrauch)", c, re.I)), None)
     st = st_override or next((c for c in df.columns if re.search(r"status|qualit", c, re.I)), None)
     if not dt or not val:
         raise RuntimeError(f"Unable to detect timestamp/value columns in {list(df.columns)}; set csv_datetime_col/csv_value_col.")
@@ -196,14 +191,15 @@ def detect_columns(df: pd.DataFrame, dt_override: str, val_override: str, st_ove
 
 def parse_csv_to_df(csv_path: Path, opts: dict) -> pd.DataFrame:
     log(f"  reading CSV: {csv_path}")
-    df = read_csv_flexible(csv_path, opts["csv_encoding"], opts["csv_sep"], opts["csv_decimal"])
+    df = read_csv_flexible(csv_path, opts["csv_encoding"], opts["csv_sep"])
     dt_col, val_col, st_col = detect_columns(
         df, opts.get("csv_datetime_col",""), opts.get("csv_value_col",""), opts.get("csv_status_col","")
     )
     ts = pd.to_datetime(df[dt_col], dayfirst=bool(opts["csv_dayfirst"]), errors="coerce")
+
     s = df[val_col].astype(str)
     if opts["csv_decimal"] == "auto":
-        # pick decimal char by prevalence
+        # choose decimal char by prevalence
         if s.str.contains(",").sum() > s.str.contains(r"\.").sum():
             s = s.str.replace(".", "", regex=False).str.replace(",", ".", regex=False)
     elif opts["csv_decimal"] == ",":
@@ -219,6 +215,7 @@ def parse_csv_to_df(csv_path: Path, opts: dict) -> pd.DataFrame:
     ts_local = d["ts"].dt.tz_localize(zone, nonexistent="shift_forward", ambiguous="infer")
     ts_utc = ts_local.dt.tz_convert("UTC")
 
+    # dedup quarter-hours
     how = opts.get("dedup", "sum")
     d = pd.DataFrame({"ts_local": ts_local, "ts_utc": ts_utc, "kwh": d["kwh"]})
     if how == "first":
@@ -227,24 +224,27 @@ def parse_csv_to_df(csv_path: Path, opts: dict) -> pd.DataFrame:
         d = d.groupby("ts_local", as_index=False)["kwh"].mean()
     else:
         d = d.groupby("ts_local", as_index=False)["kwh"].sum()
+
     d = d.assign(ts_utc=d["ts_local"].dt.tz_convert("UTC")).sort_values("ts_utc")
 
+    # quick diag
     diffs = d["ts_utc"].diff().dropna().dt.total_seconds()
     bad = (diffs != 900).sum()
     if bad:
         first_bad = d["ts_utc"].iloc[list((diffs != 900)[(diffs != 900)].index)[0]]
         log(f"  ⚠ found {bad} non-15min intervals (first at {first_bad})")
-    return d  # ts_utc, kwh
+
+    return d  # columns: ts_local, ts_utc, kwh
 
 def hourly_delta(df_15m: pd.DataFrame) -> pd.DataFrame:
-    """Sum four 15-min deltas into hourly deltas."""
+    """Sum four 15-min deltas into hourly deltas (UTC)."""
     work = df_15m.copy()
-    work["hour_start"] = work["ts_utc"].dt.floor("h")   # fix: 'h' not 'H'
+    work["hour_start"] = work["ts_utc"].dt.floor("h")  # top-of-hour
     hourly = work.groupby("hour_start", as_index=False)["kwh"].sum().sort_values("hour_start")
     return hourly  # hour_start (UTC), kwh
 
+# -------------------- Anchor (only if no HA baseline) --------------------
 def apply_anchor_if_needed(hourly: pd.DataFrame, opts: dict) -> pd.DataFrame:
-    """Used only when HA has no baseline."""
     anchor_kwh = opts.get("anchor_kwh")
     anchor_dt_local = opts.get("anchor_datetime")
     hourly = hourly.copy()
@@ -267,6 +267,7 @@ def apply_anchor_if_needed(hourly: pd.DataFrame, opts: dict) -> pd.DataFrame:
 
     dt_local = parsed.replace(tzinfo=zone)
     anchor_hour_utc = dt_local.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+
     hourly["cum_csv"] = hourly["kwh"].cumsum()
     before = hourly[hourly["hour_start"] <= anchor_hour_utc]
     if before.empty:
@@ -274,17 +275,19 @@ def apply_anchor_if_needed(hourly: pd.DataFrame, opts: dict) -> pd.DataFrame:
     else:
         cum_at_anchor = float(before["cum_csv"].iloc[-1])
         offset = anchor_kwh - cum_at_anchor
+
     hourly["sum_kwh"] = hourly["cum_csv"] + offset
     hourly["sum_kwh"] = hourly["sum_kwh"].cummax()
     return hourly
 
+# -------------------- Build stats from cumulative --------------------
 def build_stats_from_cumulative(hourly_with_sum: pd.DataFrame) -> list:
     return [
         {"start": ts.strftime("%Y-%m-%dT%H:%M:%SZ"), "sum": round(float(val), 6)}
         for ts, val in zip(hourly_with_sum["hour_start"], hourly_with_sum["sum_kwh"])
     ]
 
-# -------------------- State cache --------------------
+# -------------------- State cache (optional watermark debug) --------------------
 def load_state():
     if STATE_PATH.exists():
         try: return json.loads(STATE_PATH.read_text())
@@ -305,7 +308,7 @@ def build_metadata(opts, source_value: str):
         "has_sum": True
     }
 
-# -------------------- Uploader --------------------
+# -------------------- Simple uploader (drop CSV, no mounts needed) --------------------
 class UploadHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         opts = load_options()
@@ -318,7 +321,7 @@ class UploadHandler(BaseHTTPRequestHandler):
     <p><input type="file" name="file" accept=".csv" required></p>
     <p><button type="submit">Upload</button></p>
   </form>
-  <p>Target: <code>{input_dir}</code></p>
+  <p>Target directory: <code>{input_dir}</code></p>
 </body></html>"""
         self.send_response(200)
         self.send_header("Content-Type","text/html; charset=utf-8")
@@ -329,7 +332,7 @@ class UploadHandler(BaseHTTPRequestHandler):
         opts = load_options()
         input_dir = Path(opts["input_dir"])
         input_dir.mkdir(parents=True, exist_ok=True)
-        ctype, pdict = cgi.parse_header(self.headers.get("content-type"))
+        ctype, _ = cgi.parse_header(self.headers.get("content-type", ""))
         if ctype != "multipart/form-data":
             self.send_error(400, "Expected multipart/form-data"); return
         form = cgi.FieldStorage(fp=self.rfile, headers=self.headers,
@@ -353,30 +356,34 @@ def maybe_start_uploader():
     opts = load_options()
     if not opts.get("enable_uploader", False):
         return
-    # Internally we always listen on 8099; external port is mapped in HA UI.
-    configured = int(opts.get("uploader_port", 8099))
-    if configured != 8099:
-        log(f"⚠ uploader_port={configured} ignored; internal port is 8099. Set external mapping in HA UI.")
-    port = 8099
-    server = HTTPServer(("0.0.0.0", port), UploadHandler)
-    log(f"🌐 Uploader listening on :{port} (map external port in HA → Network)")
+    # Internal port fixed at 8099; external port mapping is set in HA UI (ports: "8099/tcp": null)
+    if int(opts.get("uploader_port", 8099)) != 8099:
+        log("⚠ uploader_port option is ignored (internal port fixed at 8099). Configure external port mapping in HA → Network.")
+    server = HTTPServer(("0.0.0.0", 8099), UploadHandler)
+    log("🌐 Uploader listening on :8099 (map external port in Add-on → Network)")
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
-# -------------------- Main processing --------------------
+# -------------------- Main processing with Daily-Fixup --------------------
 def process_csv(csv_path: Path, opts: dict):
     log(f"Processing: {csv_path.name}")
     df_15 = parse_csv_to_df(csv_path, opts)
-    hourly = hourly_delta(df_15)
+    hourly = hourly_delta(df_15)  # columns: hour_start (UTC), kwh (hourly delta)
 
-    # Baseline from HA (resume) or anchor if none
+    # Resume baseline from HA or anchor if no data exists
     last_start, last_sum = get_last_stat_from_ha(opts["statistic_id"])
     if last_start is not None and last_sum is not None:
         log(f"  resume: HA last hour={last_start} sum={last_sum}")
+
+        # ---- Daily-Fixup: we strictly append AFTER last_start ----
+        # Trim any hours <= last_start (overwrite protection + no gaps into past)
         before = len(hourly)
         hourly = hourly[hourly["hour_start"] > last_start]
         log(f"  resume: kept {len(hourly)}/{before} hours after HA baseline")
+
         if hourly.empty:
             log("  no new hours to import — skipping"); return "skipped"
+
+        # Build cumulative from HA's last sum forward (monotonic & gap-safe)
         hourly = hourly.copy()
         hourly["sum_kwh"] = float(last_sum) + hourly["kwh"].cumsum()
         hourly["sum_kwh"] = hourly["sum_kwh"].cummax()
@@ -384,17 +391,17 @@ def process_csv(csv_path: Path, opts: dict):
         log("  resume: no existing HA baseline, using anchor/zero")
         hourly = apply_anchor_if_needed(hourly, opts)
 
+    # Final stats payload
     stats = build_stats_from_cumulative(hourly)
     if not stats:
         log("  no hourly points after build — skipping"); return "skipped"
 
-    # choose accepted source
+    # Choose accepted 'source' label
     candidate_sources = ["recorder", "integration", "api", "external", "custom"]
     accepted_metadata = None
     last_err = None
     for src in candidate_sources:
         meta_try = build_metadata(opts, src)
-        log(f"  DEBUG WS test payload (source='{src}'): {json.dumps({'metadata': meta_try, 'stats': stats[:1]}, ensure_ascii=False)}")
         try:
             ws = ws_connect()
             try:
@@ -419,14 +426,11 @@ def process_csv(csv_path: Path, opts: dict):
         # REST fallback single-row test
         src = candidate_sources[0]
         meta_try = build_metadata(opts, src)
-        try:
-            ha_call_service("/api/services/recorder/import_statistics", {"metadata": [meta_try], "stats": stats[:1]})
-            log(f"✅ REST accepted 1-row test with source='{src}'")
-            accepted_metadata = meta_try
-        except Exception as e2:
-            raise RuntimeError(f"No accepted source; WS last error: {last_err}; REST failed: {e2}")
+        ha_call_service("/api/services/recorder/import_statistics", {"metadata": [meta_try], "stats": stats[:1]})
+        log(f"✅ REST accepted 1-row test with source='{src}'")
+        accepted_metadata = meta_try
 
-    # bulk import
+    # Bulk import
     try:
         import_statistics_ws(accepted_metadata, stats, int(opts.get("batch_size", 1000)))
     except Exception as e:
@@ -438,12 +442,11 @@ def process_csv(csv_path: Path, opts: dict):
             ha_call_service("/api/services/recorder/import_statistics", {"metadata": [accepted_metadata], "stats": part})
             log(f"→ REST imported {i+len(part)}/{total}")
 
-    # watermark cache (last raw timestamp processed)
+    # Optional local watermark (for debugging only)
     state = load_state()
-    new_last = df_15["ts_utc"].max().isoformat()
-    state["last_ts_utc"] = new_last
+    state["last_ts_utc"] = df_15["ts_utc"].max().isoformat()
     save_state(state)
-    log(f"✅ updated watermark cache to {new_last}")
+    log(f"✅ updated watermark cache to {state['last_ts_utc']}")
     return "imported"
 
 def main():
@@ -458,7 +461,7 @@ def main():
 
         maybe_start_uploader()
 
-        log("📡 EnerSync CSV Importer (resume + anchor) started")
+        log("📡 EnerSync CSV Importer (resume + anchor + daily-fixup) started")
         log(f"Watching: {input_dir} (pattern: {opts.get('csv_glob','*.csv')})")
 
         while True:
